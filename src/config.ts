@@ -96,7 +96,7 @@ export const DEFAULT_PROVIDERS: Provider[] = [
   {
     id: 'gemini',
     name: 'Gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     apiType: 'openai',
     apiKeys: [],
     models: [

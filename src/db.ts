@@ -94,4 +94,22 @@ function applyMigrations(db: DB): void {
       PRIMARY KEY (key_id, window_start)
     );
   `)
+
+  // 一次性自愈：修正已知错误的默认值（例如 Gemini 的 OpenAI 兼容端点应为 /v1beta 而非 /v1）
+  healProviderConfig(db)
+}
+
+/**
+ * 自愈已部署实例中已知的错误配置。
+ * 仅对「明确错误」的旧值做修正，避免覆盖用户的自定义 base_url。
+ */
+function healProviderConfig(db: DB): void {
+  const BAD_GEMINI = 'https://generativelanguage.googleapis.com/v1'
+  const GOOD_GEMINI = 'https://generativelanguage.googleapis.com/v1beta'
+  const r = db.prepare(
+    "UPDATE providers SET base_url = ?, updated_at = ? WHERE id = 'gemini' AND base_url = ?"
+  ).run(GOOD_GEMINI, new Date().toISOString(), BAD_GEMINI)
+  if (r.changes > 0) {
+    console.log('[migrate] corrected gemini base_url ->', GOOD_GEMINI)
+  }
 }
