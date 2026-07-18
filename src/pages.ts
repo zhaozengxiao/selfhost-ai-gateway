@@ -20,6 +20,8 @@ const H = (title: string) => `
 export function renderHomePage(c: Context<{ Bindings: Env }>, isLoggedIn: boolean) {
   const providers = getProviders(c.env)
   const host = c.req.header('host') || 'localhost:8787'
+  const protocol = c.req.header('x-forwarded-proto') || (c.req.url.startsWith('https') ? 'https' : 'http')
+  const apiBase = `${protocol}://${host}/v1`
 
   return c.html(`<!DOCTYPE html><html lang="zh-CN">
 ${H('首页')}
@@ -41,7 +43,7 @@ ${H('首页')}
     <div class="card" style="flex:1;">
       <h2 class="fs-1 fw-7" style="margin-bottom:5px;"><i class="fas fa-cubes c-p"></i> 模型广场</h2>
       <p class="mu fs-77" style="margin-bottom:2px;">
-        本站 API 接口：<code class="cd">https://${host}/v1</code> <i class="fas fa-copy cp copy-icon va-m" onclick='copyText("https://${host}/v1",this)'></i>
+        本站 API 接口：<code class="cd">${apiBase}</code> <i class="fas fa-copy cp copy-icon va-m" onclick='copyText("${apiBase}",this)'></i>
       </p>
       <p class="mu fs-77">模型名称格式：<code class="cd">提供商ID/模型ID</code></p>
     </div>
