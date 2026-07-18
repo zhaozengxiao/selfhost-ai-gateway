@@ -70,9 +70,13 @@ export async function handleLogin(c: Context<{ Bindings: Env }>) {
   }
 
   const sessionId = createSession(c.env, username, SESSION_TTL)
+  // 根据请求实际协议决定 Cookie 是否带 Secure 标记
+  // - 反代/直连 HTTPS（含 x-forwarded-proto）→ 启用 Secure
+  // - 本地 HTTP（含 Docker 内部 HTTP）→ 不启用 Secure，避免浏览器拒收
+  const proto = c.req.header('x-forwarded-proto') || (c.req.url.startsWith('https') ? 'https' : 'http')
   setCookie(c, 'session_id', sessionId, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: proto === 'https',
     sameSite: 'Lax',
     path: '/',
     maxAge: SESSION_TTL,
