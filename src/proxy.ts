@@ -376,7 +376,7 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
         forwardUrl = `${cleanBase}/${subPath}${url.search}`
       }
     } else {
-      const subPath = url.pathname.replace(/\/$/, '') || 'chat/completions'
+      const subPath = url.pathname.replace(/^\/v1\//, '').replace(/\/$/, '') || 'chat/completions'
       forwardUrl = `${cleanBase}/${subPath}${url.search}`
     }
 
