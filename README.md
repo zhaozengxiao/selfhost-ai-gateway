@@ -79,25 +79,111 @@ npm start
 
 ## 使用方法
 
-- **API BASE URL**：`https://你的域名/v1`
-- **API KEY**：在管理后台手动生成，格式为：`sk_cf_<KEY>`
-- **模型ID**：`提供商ID/模型ID`，提供商ID在设置中自定义，如：
-  - `deepseek/deepseek-chat`
-  - `openai/gpt-4o`
-  - `anthropic/claude-sonnet-4-20250514`
+### 1. 前置准备
 
-### curl 示例
+服务首次启动后，默认预置了 DeepSeek / OpenAI / Anthropic / Gemini 四个**空 Key** 提供商。**调用前必须先到管理后台为某个提供商配置上游 API Key**，否则会返回 `configuration_error`。
+
+1. 打开 <http://localhost:8787/admin/login>，用 `docker-compose.yml` 中配置的账号密码登录
+2. 在「提供商」卡片中展开你要使用的提供商（如 DeepSeek）
+3. 在「API Keys」区域填入上游真实 API Key，点保存
+4. 在「转发 Key」区域点「新建」，创建一个 `sk_cf_*` Key（**完整 Key 仅在创建时显示一次**，请立即保存）
+
+### 2. 接入信息
+
+| 项目 | 值 |
+|------|----|
+| **API Base URL** | `http://localhost:8787/v1`（本地 Docker）<br>`https://你的域名/v1`（反向代理后） |
+| **API Key** | 管理后台生成的 `sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+| **模型 ID 格式** | `提供商ID/模型ID`，例如 `deepseek/deepseek-chat`、`openai/gpt-4o`、`anthropic/claude-sonnet-4-20250514` |
+
+> **端点选择**：客户端访问的子路径会原样转发到上游，需匹配上游协议。
+> - OpenAI 兼容的提供商（DeepSeek / OpenAI / Gemini）→ 调用 `/v1/chat/completions`
+> - Anthropic 兼容的提供商 → 调用 `/v1/messages`
+>
+> **鉴权头**：客户端统一用 `Authorization: Bearer sk_cf_*`，网关会自动按提供商类型切换对上游的鉴权方式（OpenAI 用 `Authorization: Bearer`，Anthropic 用 `x-api-key` + `anthropic-version`）。
+
+### 3. curl 示例
+
+**OpenAI 兼容**（DeepSeek / OpenAI / Gemini）：
 
 ```bash
-curl https://你的域名/v1/chat/completions \
-  -H "Authorization: Bearer sk_cf_xxxxxxxxxxxx" \
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "openai/gpt-4o",
+    "model": "deepseek/deepseek-chat",
     "messages": [{"role":"user","content":"hi"}],
     "stream": false
   }'
 ```
+
+**Anthropic 兼容**：
+
+```bash
+curl http://localhost:8787/v1/messages \
+  -H "Authorization: Bearer sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "anthropic/claude-sonnet-4-20250514",
+    "max_tokens": 1024,
+    "messages": [{"role":"user","content":"hi"}]
+  }'
+```
+
+流式响应（SSE，OpenAI 兼容）：
+
+```bash
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o",
+    "messages": [{"role":"user","content":"讲个笑话"}],
+    "stream": true
+  }'
+```
+
+### 4. 客户端集成
+
+任何兼容 OpenAI API 的客户端都可使用，把 base URL 指向本网关即可：
+
+**OpenAI Python SDK**（用于 OpenAI 兼容提供商）：
+```python
+from openai import OpenAI
+client = OpenAI(
+    base_url="http://localhost:8787/v1",
+    api_key="sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+)
+resp = client.chat.completions.create(
+    model="deepseek/deepseek-chat",
+    messages=[{"role": "user", "content": "hi"}],
+)
+```
+
+**Anthropic Python SDK**（用于 Anthropic 兼容提供商）：
+```python
+from anthropic import Anthropic
+client = Anthropic(
+    base_url="http://localhost:8787",
+    api_key="sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+)
+resp = client.messages.create(
+    model="anthropic/claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "hi"}],
+)
+```
+
+**Cline / Continue / Cursor 等 IDE 插件**：选「OpenAI Compatible」提供商，Base URL 填 `http://localhost:8787/v1`，API Key 填 `sk_cf_*`，模型名填 `提供商ID/模型ID`。
+
+### 5. 可用模型列表
+
+```bash
+curl http://localhost:8787/v1/models \
+  -H "Authorization: Bearer sk_cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+返回所有已启用的模型（含提供商前缀），客户端可直接选用。
 
 ## 项目结构
 
