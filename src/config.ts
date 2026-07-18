@@ -100,6 +100,9 @@ export const DEFAULT_PROVIDERS: Provider[] = [
     apiType: 'google',
     apiKeys: [],
     models: [
+      { id: 'gemini-3.5-flash', enabled: true },
+      { id: 'gemini-3-flash', enabled: true },
+      { id: 'gemini-3.1-flash-lite', enabled: true },
       { id: 'gemini-2.5-flash', enabled: true },
       { id: 'gemini-2.5-pro', enabled: true },
       { id: 'gemini-2.0-flash', enabled: true },

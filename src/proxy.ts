@@ -131,11 +131,14 @@ function buildUpstreamHeaders(provider: { apiType?: string }, apiKey: string): R
 }
 
 /** 将 OpenAI 格式请求转换为 Google Gemini 格式 */
-function convertOpenAIRequestToGemini(body: ProxyRequestBody): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
+function convertOpenAIRequestToGemini(body: ProxyRequestBody): { payload: Record<string, unknown>; hasSystemInstruction: boolean } {
+  const payload: Record<string, unknown> = {}
+  let hasSystemInstruction = false
 
   if (body.messages && Array.isArray(body.messages)) {
     const contents: Record<string, unknown>[] = []
+    let systemContent: string | null = null
+
     for (const msg of body.messages) {
       if (msg.role === 'user') {
         contents.push({
@@ -148,13 +151,20 @@ function convertOpenAIRequestToGemini(body: ProxyRequestBody): Record<string, un
           parts: [{ text: String(msg.content || '') }],
         })
       } else if (msg.role === 'system') {
-        contents.push({
-          role: 'user',
-          parts: [{ text: `System instruction: ${String(msg.content || '')}` }],
-        })
+        systemContent = String(msg.content || '')
       }
     }
-    result.contents = contents
+
+    if (systemContent) {
+      payload.systemInstruction = {
+        parts: [{ text: systemContent }],
+      }
+      hasSystemInstruction = true
+    }
+
+    if (contents.length > 0) {
+      payload.contents = contents
+    }
   }
 
   const genConfig: Record<string, unknown> = {}
@@ -176,14 +186,10 @@ function convertOpenAIRequestToGemini(body: ProxyRequestBody): Record<string, un
     genConfig.stopSequences = body.stop
   }
   if (Object.keys(genConfig).length > 0) {
-    result.generationConfig = genConfig
+    payload.generationConfig = genConfig
   }
 
-  if (body.stream === true) {
-    result.stream = true
-  }
-
-  return result
+  return { payload, hasSystemInstruction }
 }
 
 /** 将 Google Gemini 响应转换为 OpenAI 格式 */
@@ -360,15 +366,17 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
     const cleanBase = provider.baseUrl.replace(/\/$/, '')
 
     if (provider.apiType === 'google') {
-      forwardBody = convertOpenAIRequestToGemini(body)
+      const conversion = convertOpenAIRequestToGemini(body)
+      forwardBody = conversion.payload
       const subPath = url.pathname.replace(/^\/v1\//, '') || 'chat/completions'
       if (subPath === 'chat/completions') {
-        forwardUrl = `${cleanBase}/models/${modelId}:generateContent${url.search}`
+        const endpoint = isStream ? 'streamGenerateContent' : 'generateContent'
+        forwardUrl = `${cleanBase}/models/${modelId}:${endpoint}${url.search}`
       } else {
         forwardUrl = `${cleanBase}/${subPath}${url.search}`
       }
     } else {
-      const subPath = url.pathname.replace(/^\/v1\//, '') || 'chat/completions'
+      const subPath = url.pathname.replace(/\/$/, '') || 'chat/completions'
       forwardUrl = `${cleanBase}/${subPath}${url.search}`
     }
 
