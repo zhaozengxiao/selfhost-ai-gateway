@@ -60,10 +60,6 @@ export function recordProxyOutcome(o: ProxyOutcome): void {
   try {
     requestsTotal.inc({ provider: o.providerId, status: String(o.status), stream: streamLabel })
     requestDurationMs.observe({ provider: o.providerId }, o.durationMs)
-    if (o.tokens > 0) {
-      // 单独的成功调用才有 token 计数；这里 tokens 是 totalTokens，
-      // 拆分由 proxy.ts 在解析 usage 后调用 recordTokens 完成
-    }
     if (o.status >= 500 || o.status === 401 || o.status === 403) {
       keyFailuresTotal.inc({ provider: o.providerId })
     }

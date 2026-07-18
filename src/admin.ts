@@ -180,6 +180,9 @@ function buildAuthHeaders(apiKey: string, apiType?: string): Record<string, stri
   if (apiType === 'anthropic') {
     return { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
   }
+  if (apiType === 'google') {
+    return { 'x-goog-api-key': apiKey }
+  }
   return { Authorization: `Bearer ${apiKey}` }
 }
 
