@@ -318,9 +318,15 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
   }
 
   try {
-    const body = await c.req.json<ProxyRequestBody>()
-    model = body.model
-    isStream = !!body.stream
+    let body: ProxyRequestBody
+    try {
+      body = await c.req.json<ProxyRequestBody>()
+      model = body.model
+      isStream = !!body.stream
+    } catch {
+      // GET 请求或无 body / 非法 JSON：返回 400 而非 500，避免污染日志
+      return reject(400, '请求体为空或不是合法的 JSON', 'invalid_request_error')
+    }
 
     if (!model) {
       return reject(400, '缺少 model 参数', 'invalid_request_error')
