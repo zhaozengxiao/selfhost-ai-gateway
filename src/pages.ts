@@ -331,6 +331,65 @@ ${H('管理')}
       </div>
     </div>`).join('')}
 </div>
+
+<!-- 用量统计 -->
+<div class="card">
+  <div class="card-hd">
+    <h2><i class="fas fa-chart-bar"></i>用量统计</h2>
+    <div class="fc gap-8">
+      <select id="usageRange" onchange="loadUsage()" class="select-sm" style="font-size:.76rem;">
+        <option value="1">今天</option>
+        <option value="7" selected>近 7 天</option>
+        <option value="30">近 30 天</option>
+        <option value="90">近 90 天</option>
+        <option value="all">全部</option>
+      </select>
+      <button class="btn btn-gh btn-xs" onclick="loadUsage()"><i class="fas fa-sync-alt"></i> 刷新</button>
+    </div>
+  </div>
+
+  <!-- 汇总卡片 -->
+  <div id="usageStats" class="stat-grid">
+    <div class="stat-card"><div class="label"><i class="fas fa-server"></i>总请求</div><div class="value" id="statTotal">-</div><div class="sub" id="statTotalSub"></div></div>
+    <div class="stat-card"><div class="label"><i class="fas fa-check-circle"></i>成功</div><div class="value s" id="statSuccess">-</div><div class="sub" id="statSuccessSub"></div></div>
+    <div class="stat-card"><div class="label"><i class="fas fa-times-circle"></i>失败</div><div class="value d" id="statFailed">-</div><div class="sub" id="statFailedSub"></div></div>
+    <div class="stat-card"><div class="label"><i class="fas fa-coins"></i>Token 用量</div><div class="value" id="statTokens">-</div><div class="sub" id="statTokensSub"></div></div>
+  </div>
+
+  <!-- Tabs：按 Key / 按 Provider / 明细 -->
+  <div class="usage-tabs">
+    <button class="usage-tab active" onclick="switchUsageTab(this,'byKey')"><i class="fas fa-key"></i> 按 Key 聚合</button>
+    <button class="usage-tab" onclick="switchUsageTab(this,'byProvider')"><i class="fas fa-server"></i> 按提供商聚合</button>
+    <button class="usage-tab" onclick="switchUsageTab(this,'logs')"><i class="fas fa-list"></i> 明细日志</button>
+  </div>
+
+  <!-- Panel：按 Key 聚合 -->
+  <div id="panel-byKey" class="usage-panel active">
+    <div id="byKeyTable" class="usage-loading"><i class="fas fa-spinner"></i> 加载中...</div>
+  </div>
+
+  <!-- Panel：按 Provider 聚合 -->
+  <div id="panel-byProvider" class="usage-panel">
+    <div id="byProviderTable" class="usage-loading"><i class="fas fa-spinner"></i> 加载中...</div>
+  </div>
+
+  <!-- Panel：明细日志 -->
+  <div id="panel-logs" class="usage-panel">
+    <div class="usage-filter">
+      <select id="logKeyFilter" onchange="loadLogs(1)">
+        <option value="">全部 Key</option>
+        ${proxyKeys.map(k=>`<option value="${k.id}">${k.name}</option>`).join('')}
+      </select>
+      <select id="logProviderFilter" onchange="loadLogs(1)">
+        <option value="">全部提供商</option>
+        ${providers.map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}
+      </select>
+      <span class="fx1"></span>
+      <span class="mu" id="logPager" style="font-size:.72rem;"></span>
+    </div>
+    <div id="logsTable" class="usage-loading"><i class="fas fa-spinner"></i> 加载中...</div>
+  </div>
+</div>
 </main>
 
 <div id="modal" class="modal-o hd" onclick="if(event.target===this)closeM()">
@@ -726,6 +785,191 @@ async function toggleProxyKey(id, checked) {
     }
   } else toast(d.message || '操作失败', 'error')
 }
+
+// ===== 用量统计 =====
+let usageCache = null      // summary 缓存
+let activeUsageTab = 'byKey'
+let logPage = 1
+const LOG_PER_PAGE = 20
+
+function usageFromIso() {
+  const v = document.getElementById('usageRange').value
+  if (v === 'all') return undefined
+  const days = Number(v)
+  const d = new Date(Date.now() - days * 86400000)
+  return d.toISOString()
+}
+
+function fmtNum(n) {
+  if (n == null) return '0'
+  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B'
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M'
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K'
+  return String(n)
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso)
+  const pad = (x) => String(x).padStart(2, '0')
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+}
+
+function statusBadge(status) {
+  if (status >= 200 && status < 300) return '<span class="badge ok">' + status + '</span>'
+  if (status === 429) return '<span class="badge warn">429</span>'
+  return '<span class="badge err">' + status + '</span>'
+}
+
+async function loadUsage() {
+  // 加载 summary
+  const from = usageFromIso()
+  const qs = from ? ('?from=' + encodeURIComponent(from)) : ''
+  document.getElementById('byKeyTable').innerHTML = '<div class="usage-loading"><i class="fas fa-spinner"></i> 加载中...</div>'
+  document.getElementById('byProviderTable').innerHTML = '<div class="usage-loading"><i class="fas fa-spinner"></i> 加载中...</div>'
+
+  try {
+    const r = await fetch('/admin/api/usage/summary' + qs)
+    const d = await r.json()
+    if (!d.success) throw new Error(d.message || '加载失败')
+    usageCache = d.data
+
+    // 顶部统计卡片
+    const data = d.data
+    const successRate = data.totalRequests > 0 ? ((data.totalSuccess / data.totalRequests) * 100).toFixed(1) + '%' : '-'
+    const failRate = data.totalRequests > 0 ? ((data.totalFailed / data.totalRequests) * 100).toFixed(1) + '%' : '-'
+    document.getElementById('statTotal').textContent = fmtNum(data.totalRequests)
+    document.getElementById('statTotalSub').textContent = '全部记录'
+    document.getElementById('statSuccess').textContent = fmtNum(data.totalSuccess)
+    document.getElementById('statSuccessSub').textContent = '成功率 ' + successRate
+    document.getElementById('statFailed').textContent = fmtNum(data.totalFailed)
+    document.getElementById('statFailedSub').textContent = '失败率 ' + failRate
+    document.getElementById('statTokens').textContent = fmtNum(data.totalTokens)
+    // 推算 token 单价未实现，只显示汇总
+    const promptT = data.byKey.reduce((s,x)=>s+x.promptTokens,0)
+    const completionT = data.byKey.reduce((s,x)=>s+x.completionTokens,0)
+    document.getElementById('statTokensSub').textContent = '输入 ' + fmtNum(promptT) + ' / 输出 ' + fmtNum(completionT)
+
+    // 按 Key 聚合表
+    if (data.byKey.length === 0) {
+      document.getElementById('byKeyTable').innerHTML = '<div class="usage-empty"><i class="fas fa-inbox"></i> 暂无数据</div>'
+    } else {
+      document.getElementById('byKeyTable').innerHTML = '<table class="usage-table"><thead><tr>'
+        + '<th>Key 名称</th><th class="num">请求</th><th class="num">成功</th><th class="num">失败</th>'
+        + '<th class="num">Token</th><th class="num">输入</th><th class="num">输出</th><th class="num">平均耗时</th>'
+        + '</tr></thead><tbody>'
+        + data.byKey.map(r => '<tr>'
+          + '<td>' + escapeHtml(r.proxyKeyName || '-') + '</td>'
+          + '<td class="num">' + r.totalRequests + '</td>'
+          + '<td class="num">' + r.successRequests + '</td>'
+          + '<td class="num">' + r.failedRequests + '</td>'
+          + '<td class="num">' + fmtNum(r.totalTokens) + '</td>'
+          + '<td class="num">' + fmtNum(r.promptTokens) + '</td>'
+          + '<td class="num">' + fmtNum(r.completionTokens) + '</td>'
+          + '<td class="num">' + r.avgDurationMs + 'ms</td>'
+          + '</tr>').join('')
+        + '</tbody></table>'
+    }
+
+    // 按 Provider 聚合表
+    if (data.byProvider.length === 0) {
+      document.getElementById('byProviderTable').innerHTML = '<div class="usage-empty"><i class="fas fa-inbox"></i> 暂无数据</div>'
+    } else {
+      document.getElementById('byProviderTable').innerHTML = '<table class="usage-table"><thead><tr>'
+        + '<th>提供商 ID</th><th class="num">请求</th><th class="num">成功</th><th class="num">Token</th>'
+        + '</tr></thead><tbody>'
+        + data.byProvider.map(r => '<tr>'
+          + '<td class="mono">' + escapeHtml(r.providerId || '-') + '</td>'
+          + '<td class="num">' + r.totalRequests + '</td>'
+          + '<td class="num">' + r.successRequests + '</td>'
+          + '<td class="num">' + fmtNum(r.totalTokens) + '</td>'
+          + '</tr>').join('')
+        + '</tbody></table>'
+    }
+  } catch (e) {
+    document.getElementById('byKeyTable').innerHTML = '<div class="usage-empty"><i class="fas fa-exclamation-circle c-d"></i> ' + (e.message || '加载失败') + '</div>'
+    document.getElementById('byProviderTable').innerHTML = ''
+  }
+
+  // 如果当前在 logs tab，刷新日志
+  if (activeUsageTab === 'logs') {
+    loadLogs(logPage)
+  }
+}
+
+function escapeHtml(s) {
+  if (s == null) return ''
+  return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c])
+}
+
+function switchUsageTab(btn, tab) {
+  activeUsageTab = tab
+  document.querySelectorAll('.usage-tab').forEach(b => b.classList.remove('active'))
+  btn.classList.add('active')
+  document.querySelectorAll('.usage-panel').forEach(p => p.classList.remove('active'))
+  document.getElementById('panel-' + tab).classList.add('active')
+  if (tab === 'logs' && logPage === 1) {
+    loadLogs(1)
+  }
+}
+
+async function loadLogs(page) {
+  logPage = page || 1
+  const from = usageFromIso()
+  const keyId = document.getElementById('logKeyFilter').value
+  const providerId = document.getElementById('logProviderFilter').value
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (keyId) params.set('keyId', keyId)
+  if (providerId) params.set('providerId', providerId)
+  params.set('limit', String(LOG_PER_PAGE))
+  params.set('offset', String((logPage - 1) * LOG_PER_PAGE))
+
+  const table = document.getElementById('logsTable')
+  table.innerHTML = '<div class="usage-loading"><i class="fas fa-spinner"></i> 加载中...</div>'
+
+  try {
+    const r = await fetch('/admin/api/usage/logs?' + params.toString())
+    const d = await r.json()
+    if (!d.success) throw new Error(d.message || '加载失败')
+    const logs = d.data || []
+    if (logs.length === 0) {
+      table.innerHTML = '<div class="usage-empty"><i class="fas fa-inbox"></i> 暂无日志</div>'
+      document.getElementById('logPager').textContent = ''
+      return
+    }
+
+    table.innerHTML = '<table class="usage-table"><thead><tr>'
+      + '<th>时间</th><th>Key</th><th>提供商/模型</th><th>状态</th>'
+      + '<th class="num">耗时</th><th class="num">Token</th><th>流式</th><th>错误</th>'
+      + '</tr></thead><tbody>'
+      + logs.map(l => '<tr>'
+        + '<td class="mono" style="white-space:nowrap;">' + fmtDate(l.createdAt) + '</td>'
+        + '<td>' + escapeHtml(l.proxyKeyName || '-') + '</td>'
+        + '<td class="mono">' + escapeHtml(l.providerId) + '/' + escapeHtml(l.model) + '</td>'
+        + '<td>' + statusBadge(l.status) + '</td>'
+        + '<td class="num">' + l.durationMs + 'ms</td>'
+        + '<td class="num">' + (l.totalTokens || 0) + '</td>'
+        + '<td>' + (l.stream ? '<i class="fas fa-check c-s"></i>' : '-') + '</td>'
+        + '<td class="mono" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="' + escapeHtml(l.error || '') + '">' + escapeHtml((l.error || '').substring(0, 80)) + '</td>'
+        + '</tr>').join('')
+      + '</tbody></table>'
+
+    // 简易分页
+    const pager = document.getElementById('logPager')
+    if (logs.length < LOG_PER_PAGE && logPage === 1) {
+      pager.textContent = logs.length + ' 条'
+    } else {
+      pager.innerHTML = '<button class="btn btn-gh btn-xs" onclick="loadLogs(' + (logPage - 1) + ')"' + (logPage <= 1 ? ' disabled' : '') + '><i class="fas fa-chevron-left"></i></button> '
+        + '第 ' + logPage + ' 页 '
+        + '<button class="btn btn-gh btn-xs" onclick="loadLogs(' + (logPage + 1) + ')"' + (logs.length < LOG_PER_PAGE ? ' disabled' : '') + '><i class="fas fa-chevron-right"></i></button>'
+    }
+  } catch (e) {
+    table.innerHTML = '<div class="usage-empty"><i class="fas fa-exclamation-circle c-d"></i> ' + (e.message || '加载失败') + '</div>'
+  }
+}
+
+// 页面加载完成后自动加载用量统计
+document.addEventListener('DOMContentLoaded', loadUsage)
 </script>
 </body></html>`)
 }
