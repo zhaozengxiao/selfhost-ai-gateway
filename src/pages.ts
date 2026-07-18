@@ -130,7 +130,7 @@ ${H('登录')}
 <div class="login-wrapper">
   <div class="card login-card">
     <h2 class="tc fs-1 mb-3"><i class="fas fa-lock c-p"></i> 管理员登录</h2>
-    <p class="tc mu mb-2">账号由 Cloudflare 环境变量配置</p>
+    <p class="tc mu mb-2">账号由环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 配置</p>
     <div id="er" class="al al-e hd mb-2"><i class="fas fa-exclamation-circle"></i><span id="em"></span></div>
     <div class="fg m-16-0"><label><i class="fas fa-user"></i> 用户名</label><input type="text" class="input-mt-6" id="u" placeholder="请输入用户名"></div>
     <div class="fg m-16-0"><label><i class="fas fa-lock"></i> 密码</label><input type="password" class="input-mt-6" id="p" placeholder="请输入密码" onkeydown="if(event.key==='Enter')l()"></div>
