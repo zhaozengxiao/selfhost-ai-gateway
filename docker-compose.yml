@@ -1,0 +1,37 @@
+services:
+  ai-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-gateway:latest
+    container_name: ai-gateway
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # 管理后台登录凭据（首次启动前请修改）
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: change-me-to-a-strong-password
+      # HTTP 监听端口（容器内）
+      PORT: 8787
+      # 数据库文件路径（位于挂载的卷中）
+      DB_PATH: /app/data/ai-gateway.db
+      # 用量日志保留天数
+      USAGE_LOG_RETENTION_DAYS: 90
+      # 可选：保护 /metrics 端点的 Bearer Token（不设置则公开）
+      # METRICS_TOKEN: your-metrics-token
+      # 可选：Node 生产环境标记（影响 Cookie secure 属性等）
+      NODE_ENV: production
+    volumes:
+      # SQLite 数据持久化（含配置 / Key / 用量日志）
+      - ai-gateway-data:/app/data
+    # 本地日志输出
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ai-gateway-data:
+    driver: local

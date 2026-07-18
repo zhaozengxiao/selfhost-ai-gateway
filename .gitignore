@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.dev.vars
+.env
+*.local
+.wrangler/
+worker-configuration.d.ts
+.zcode/
+# 运行时数据（SQLite + WAL）
+data/
