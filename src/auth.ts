@@ -159,5 +159,5 @@ export async function proxyKeyAuthMiddleware(c: Context<{ Bindings: Env }>, next
 /** 检查 model 是否在 ProxyKey 的 allowedModels 白名单内 */
 export function isModelAllowed(ctx: ProxyKeyContext | undefined, fullModelId: string): boolean {
   if (!ctx || ctx.allowedModels.length === 0) return true
-  return ctx.allowedModels.some((prefix) => fullModelId === prefix || fullModelId.startsWith(prefix + '/') || fullModelId.startsWith(prefix))
+  return ctx.allowedModels.some((prefix) => fullModelId === prefix || fullModelId.startsWith(prefix + '/'))
 }

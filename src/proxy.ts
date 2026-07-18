@@ -284,10 +284,80 @@ async function convertGeminiSSEToOpenAI(readable: ReadableStream, model: string)
         }
       } catch (e) {
         controller.error(e)
-      } finally {
         reader.releaseLock()
-        controller.close()
+        return
       }
+      reader.releaseLock()
+      controller.close()
+    },
+  })
+}
+
+/**
+ * 包装 SSE 流，从中提取 usage 信息。
+ * 流式响应的 token 用量通常在最后一个 chunk 中包含 usage 字段，
+ * 该函数边透传边解析，检测到 usage 后通过回调写入用量日志。
+ */
+function wrapSSEWithUsageTracking(
+  stream: ReadableStream<Uint8Array>,
+  apiType: string | undefined,
+  onUsage: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
+): ReadableStream<Uint8Array> {
+  const reader = stream.getReader()
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const chunk = decoder.decode(value, { stream: true })
+          buffer += chunk
+
+          // 按行分割，保留最后一行（可能不完整）在 buffer 中
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('data: ') && line.substring(6).trim() !== '[DONE]') {
+              try {
+                const json = JSON.parse(line.substring(6))
+                if (json.usage) {
+                  const u = extractUsage(json, apiType)
+                  if (u.totalTokens > 0) {
+                    onUsage(u)
+                  }
+                }
+              } catch { /* 忽略非 JSON 行 */ }
+            }
+          }
+
+          controller.enqueue(value)
+        }
+
+        // 处理 buffer 中剩余的数据
+        if (buffer.startsWith('data: ') && buffer.substring(6).trim() !== '[DONE]') {
+          try {
+            const json = JSON.parse(buffer.substring(6))
+            if (json.usage) {
+              const u = extractUsage(json, apiType)
+              if (u.totalTokens > 0) {
+                onUsage(u)
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      } catch (e) {
+        controller.error(e)
+        reader.releaseLock()
+        return
+      }
+      reader.releaseLock()
+      controller.close()
     },
   })
 }
@@ -456,9 +526,18 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
             // Google Gemini：需要转换响应格式为 OpenAI 兼容格式
             if (isSse) {
               const convertedStream = await convertGeminiSSEToOpenAI(response.body!, model)
+              // 流式 token 用量会在最后一个 chunk 中通过 wrapSSEWithUsageTracking 异步提取
+              let streamTokens: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null
+              const wrapped = wrapSSEWithUsageTracking(convertedStream, 'openai', (u) => {
+                streamTokens = u
+                writeUsageLog(c, proxyCtx.ctx, pid, model!, 200, durationMs,
+                  u.promptTokens, u.completionTokens, u.totalTokens, true, null)
+                recordTokens(pid, u.promptTokens, u.completionTokens)
+              })
+              // 先写入占位日志（tokens=0），流结束后 callback 会写入带 token 数的日志
               writeUsageLog(c, proxyCtx.ctx, pid, model, 200, durationMs, 0, 0, 0, true, null)
               recordProxyOutcome({ providerId: pid, status: 200, durationMs, tokens: 0, stream: true })
-              return new Response(convertedStream, {
+              return new Response(wrapped, {
                 status: response.status,
                 headers: {
                   'Content-Type': 'text/event-stream; charset=utf-8',
@@ -498,10 +577,16 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
           }
 
           if (isSse) {
-            // 流式响应：直接透传 ReadableStream，不缓冲
+            // 流式响应：包装 stream 以提取最后一个 chunk 中的 usage 信息
+            const wrapped = wrapSSEWithUsageTracking(response.body!, provider.apiType, (u) => {
+              writeUsageLog(c, proxyCtx.ctx, pid, model!, 200, durationMs,
+                u.promptTokens, u.completionTokens, u.totalTokens, true, null)
+              recordTokens(pid, u.promptTokens, u.completionTokens)
+            })
+            // 先写入占位日志（tokens=0），流结束后 callback 会写入带 token 数的日志
             writeUsageLog(c, proxyCtx.ctx, pid, model, 200, durationMs, 0, 0, 0, true, null)
             recordProxyOutcome({ providerId: pid, status: 200, durationMs, tokens: 0, stream: true })
-            return new Response(response.body, {
+            return new Response(wrapped, {
               status: response.status,
               headers: {
                 'Content-Type': contentType || 'text/event-stream; charset=utf-8',
