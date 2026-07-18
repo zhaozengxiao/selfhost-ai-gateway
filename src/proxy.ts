@@ -28,31 +28,35 @@ export async function testModelConnection(
   baseUrl: string,
   apiKey: string,
   modelId: string,
-  apiType?: 'openai' | 'anthropic'
+  apiType?: 'openai' | 'anthropic' | 'google'
 ): Promise<{ success: boolean; message: string; statusCode?: number }> {
   try {
     const cleanBase = baseUrl.replace(/\/$/, '')
-    const endpoint = apiType === 'anthropic' ? 'messages' : 'chat/completions'
-    const url = `${cleanBase}/${endpoint}`
+    let endpoint: string
+    let headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    let body: Record<string, unknown>
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    }
     if (apiType === 'anthropic') {
+      endpoint = 'messages'
       headers['x-api-key'] = apiKey
       headers['anthropic-version'] = '2023-06-01'
+      body = { model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }
+    } else if (apiType === 'google') {
+      endpoint = `models/${modelId}:generateContent`
+      headers['x-goog-api-key'] = apiKey
+      body = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] }
     } else {
+      endpoint = 'chat/completions'
       headers['Authorization'] = `Bearer ${apiKey}`
+      body = { model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }
     }
+
+    const url = `${cleanBase}/${endpoint}`
 
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'hi' }],
-        max_tokens: 1,
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     })
 
@@ -114,10 +118,172 @@ function buildUpstreamHeaders(provider: { apiType?: string }, apiKey: string): R
       'anthropic-version': '2023-06-01',
     }
   }
+  if (provider.apiType === 'google') {
+    return {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    }
+  }
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
   }
+}
+
+/** 将 OpenAI 格式请求转换为 Google Gemini 格式 */
+function convertOpenAIRequestToGemini(body: ProxyRequestBody): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+
+  if (body.messages && Array.isArray(body.messages)) {
+    const contents: Record<string, unknown>[] = []
+    for (const msg of body.messages) {
+      if (msg.role === 'user') {
+        contents.push({
+          role: 'user',
+          parts: [{ text: String(msg.content || '') }],
+        })
+      } else if (msg.role === 'assistant') {
+        contents.push({
+          role: 'model',
+          parts: [{ text: String(msg.content || '') }],
+        })
+      } else if (msg.role === 'system') {
+        contents.push({
+          role: 'user',
+          parts: [{ text: `System instruction: ${String(msg.content || '')}` }],
+        })
+      }
+    }
+    result.contents = contents
+  }
+
+  const genConfig: Record<string, unknown> = {}
+  if (typeof body.max_tokens === 'number') {
+    genConfig.maxOutputTokens = body.max_tokens
+  }
+  if (typeof body.temperature === 'number') {
+    genConfig.temperature = body.temperature
+  }
+  if (typeof body.top_p === 'number') {
+    genConfig.topP = body.top_p
+  }
+  if (typeof body.top_k === 'number') {
+    genConfig.topK = body.top_k
+  }
+  if (typeof body.stop === 'string') {
+    genConfig.stopSequences = [body.stop]
+  } else if (Array.isArray(body.stop)) {
+    genConfig.stopSequences = body.stop
+  }
+  if (Object.keys(genConfig).length > 0) {
+    result.generationConfig = genConfig
+  }
+
+  if (body.stream === true) {
+    result.stream = true
+  }
+
+  return result
+}
+
+/** 将 Google Gemini 响应转换为 OpenAI 格式 */
+function convertGeminiResponseToOpenAI(parsed: unknown, model: string): string {
+  const obj = parsed as Record<string, unknown>
+  const candidates = obj.candidates as Array<Record<string, unknown>>
+  const usageMeta = obj.usageMetadata as Record<string, unknown>
+
+  const content = candidates?.[0]?.content as Record<string, unknown>
+  const parts = content?.parts as Array<Record<string, unknown>>
+  const text = parts?.[0]?.text as string || ''
+  const finishReason = candidates?.[0]?.finishReason as string || 'stop'
+
+  const openAIResponse = {
+    id: `chatcmpl-${Date.now()}`,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: text,
+      },
+      finish_reason: finishReason.toLowerCase(),
+    }],
+    usage: {
+      prompt_tokens: Number(usageMeta?.promptTokenCount) || 0,
+      completion_tokens: Number(usageMeta?.candidatesTokenCount) || 0,
+      total_tokens: Number(usageMeta?.totalTokenCount) || 0,
+    },
+  }
+
+  return JSON.stringify(openAIResponse)
+}
+
+/** 将 Gemini SSE 流式响应转换为 OpenAI SSE 格式 */
+async function convertGeminiSSEToOpenAI(readable: ReadableStream, model: string): Promise<ReadableStream> {
+  const reader = readable.getReader()
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const chunk = decoder.decode(value, { stream: true })
+          const lines = chunk.split('\n')
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) {
+              controller.enqueue(encoder.encode(line + '\n'))
+              continue
+            }
+
+            const jsonStr = line.substring(6)
+            if (jsonStr.trim() === '[DONE]') {
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+              continue
+            }
+
+            try {
+              const obj = JSON.parse(jsonStr) as Record<string, unknown>
+              const candidates = obj.candidates as Array<Record<string, unknown>>
+              const content = candidates?.[0]?.content as Record<string, unknown>
+              const parts = content?.parts as Array<Record<string, unknown>>
+              const text = parts?.[0]?.text as string || ''
+              const finishReason = candidates?.[0]?.finishReason as string
+
+              const openAIChunk = {
+                id: `chatcmpl-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    content: text,
+                  },
+                  finish_reason: finishReason || null,
+                }],
+              }
+
+              controller.enqueue(encoder.encode('data: ' + JSON.stringify(openAIChunk) + '\n\n'))
+            } catch {
+              controller.enqueue(encoder.encode(line + '\n'))
+            }
+          }
+        }
+      } catch (e) {
+        controller.error(e)
+      } finally {
+        reader.releaseLock()
+        controller.close()
+      }
+    },
+  })
 }
 
 interface ProxyKeyCtx {
@@ -188,11 +354,23 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
       return reject(500, `提供商 "${provider.name}" 未配置可用的 API Key`, 'configuration_error')
     }
 
-    const forwardBody = { ...body, model: modelId }
+    let forwardBody: Record<string, unknown> = { ...body, model: modelId }
+    let forwardUrl: string
     const url = new URL(c.req.url)
-    const subPath = url.pathname.replace(/^\/v1\//, '') || 'chat/completions'
     const cleanBase = provider.baseUrl.replace(/\/$/, '')
-    const forwardUrl = `${cleanBase}/${subPath}${url.search}`
+
+    if (provider.apiType === 'google') {
+      forwardBody = convertOpenAIRequestToGemini(body)
+      const subPath = url.pathname.replace(/^\/v1\//, '') || 'chat/completions'
+      if (subPath === 'chat/completions') {
+        forwardUrl = `${cleanBase}/models/${modelId}:generateContent${url.search}`
+      } else {
+        forwardUrl = `${cleanBase}/${subPath}${url.search}`
+      }
+    } else {
+      const subPath = url.pathname.replace(/^\/v1\//, '') || 'chat/completions'
+      forwardUrl = `${cleanBase}/${subPath}${url.search}`
+    }
 
     // 按健康状态分组排序：健康→洗牌，不健康→末尾，冷却到期→试用，连续失败达阈值→降权
     const healthData = readHealth(c.env, pid)
@@ -259,6 +437,51 @@ export async function handleProxy(c: Context<{ Bindings: Env }>) {
           const durationMs = Date.now() - startTime
           const contentType = response.headers.get('Content-Type') || ''
           const isSse = isStream || contentType.includes('text/event-stream')
+
+          if (provider.apiType === 'google') {
+            // Google Gemini：需要转换响应格式为 OpenAI 兼容格式
+            if (isSse) {
+              const convertedStream = await convertGeminiSSEToOpenAI(response.body!, model)
+              writeUsageLog(c, proxyCtx.ctx, pid, model, 200, durationMs, 0, 0, 0, true, null)
+              recordProxyOutcome({ providerId: pid, status: 200, durationMs, tokens: 0, stream: true })
+              return new Response(convertedStream, {
+                status: response.status,
+                headers: {
+                  'Content-Type': 'text/event-stream; charset=utf-8',
+                  'Cache-Control': 'no-cache, no-transform',
+                  'Connection': 'keep-alive',
+                  'X-Accel-Buffering': 'no',
+                },
+              })
+            }
+
+            const text = await response.text()
+            let parsedBody: unknown = null
+            try { parsedBody = JSON.parse(text) } catch { /* 非 JSON 响应 */ }
+            const convertedText = convertGeminiResponseToOpenAI(parsedBody, model)
+
+            let convertedParsed: unknown = null
+            try { convertedParsed = JSON.parse(convertedText) } catch { /* ignore */ }
+            const usage = extractUsage(convertedParsed, 'openai')
+
+            writeUsageLog(
+              c, proxyCtx.ctx, pid, model, response.status, durationMs,
+              usage.promptTokens, usage.completionTokens, usage.totalTokens, false, null
+            )
+            recordProxyOutcome({
+              providerId: pid, status: response.status, durationMs,
+              tokens: usage.totalTokens, stream: false,
+            })
+            recordTokens(pid, usage.promptTokens, usage.completionTokens)
+
+            return new Response(convertedText, {
+              status: response.status,
+              headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+              },
+            })
+          }
 
           if (isSse) {
             // 流式响应：直接透传 ReadableStream，不缓冲

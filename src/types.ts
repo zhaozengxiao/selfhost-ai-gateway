@@ -14,7 +14,7 @@ export interface Provider {
   id: string
   name: string
   baseUrl: string
-  apiType?: 'openai' | 'anthropic'
+  apiType?: 'openai' | 'anthropic' | 'google'
   apiKeys: ApiKeyEntry[]
   models: Model[]
   enabled: boolean
@@ -60,7 +60,7 @@ export interface CreateProviderRequest {
   id: string
   name: string
   baseUrl: string
-  apiType?: 'openai' | 'anthropic'
+  apiType?: 'openai' | 'anthropic' | 'google'
   apiKeys?: Array<{ key: string; enabled: boolean }>
   models?: Array<{ id: string; enabled: boolean }> | string[]
   enabled?: boolean
@@ -69,7 +69,7 @@ export interface CreateProviderRequest {
 export interface UpdateProviderRequest {
   name?: string
   baseUrl?: string
-  apiType?: 'openai' | 'anthropic'
+  apiType?: 'openai' | 'anthropic' | 'google'
   apiKeys?: Array<{ key: string; enabled: boolean }>
   models?: Array<{ id: string; enabled: boolean }> | string[]
   enabled?: boolean
